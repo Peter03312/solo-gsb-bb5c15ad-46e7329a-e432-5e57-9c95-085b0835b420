@@ -77,6 +77,127 @@ class InvalidLockError(ValueError):
     """锁定对在当前日志集合上不再合法（缺失/不互证/波段模式/时差超限）。"""
 
 
+# --------------------------------------------------------------------------
+# 未互证日志缺口诊断（复核员按演练查看未配对记录的缺口归因，只读）
+# --------------------------------------------------------------------------
+# 四类归因（按当前日志依次判定，互斥）：
+REASON_CANDIDATE_OCCUPIED = "candidate_occupied"          # 候选已占用
+REASON_TIME_DIFF_EXCEEDED = "time_diff_exceeded"          # 时差超限
+REASON_BAND_OR_MODE_MISMATCH = "band_or_mode_mismatch"    # 波段或模式不符
+REASON_COUNTERPART_LOG_MISSING = "counterpart_log_missing"  # 缺少对方日志
+
+GAP_REASON_LABELS: dict[str, str] = {
+    REASON_CANDIDATE_OCCUPIED: "候选已占用",
+    REASON_TIME_DIFF_EXCEEDED: "时差超限",
+    REASON_BAND_OR_MODE_MISMATCH: "波段或模式不符",
+    REASON_COUNTERPART_LOG_MISSING: "缺少对方日志",
+}
+
+
+@dataclass(frozen=True)
+class GapDiagnosis:
+    """一条未配对记录的缺口归因。
+
+    ``counterpart_record_no`` / ``time_diff_seconds`` 仅前三类有值；
+    “缺少对方日志”时二者为 ``None``。
+    """
+
+    record_no: str
+    reason: str
+    counterpart_record_no: str | None
+    time_diff_seconds: float | None
+
+    @property
+    def reason_label(self) -> str:
+        return GAP_REASON_LABELS[self.reason]
+
+
+def _closest(
+    target: Record, candidates: Sequence[Record]
+) -> tuple[Record, int]:
+    """返回时差（微秒）最小的候选；时差相同取记录号最小。"""
+    chosen = min(
+        candidates,
+        key=lambda r: (abs(r.ts_micros - target.ts_micros), r.record_no),
+    )
+    return chosen, abs(chosen.ts_micros - target.ts_micros)
+
+
+def diagnose_unpaired_gaps(
+    records: Sequence[Record],
+    allowed_diff_seconds: float,
+    unpaired: Sequence[str],
+) -> tuple[GapDiagnosis, ...]:
+    """对每条未配对记录按当前日志依次归因。
+
+    判定顺序（前者命中即归该类）：
+      1. 存在完全符合互指、波段、模式且时差不超限的候选
+         （该候选必然已被其他配对/锁定占用，否则最大匹配不会留下此边）
+         -> ``candidate_occupied``；
+      2. 否则存在互指且波段、模式相同的记录（时差必超限）
+         -> ``time_diff_exceeded``；
+      3. 否则存在互指记录（波段或模式不符）
+         -> ``band_or_mode_mismatch``；
+      4. 否则 -> ``counterpart_log_missing``。
+
+    每类在对应候选集合中取**实际时差最小、再按记录号最小**的对方记录；
+    最后一类对方记录为空。结果按记录号升序。纯函数，不改变任何状态。
+    """
+    allowed_micros = int(round(allowed_diff_seconds * MICROS_PER_SECOND))
+    record_map = {r.record_no: r for r in records}
+
+    # (本台, 对方) -> 记录列表：以 (对方, 本台) 反查即全部互指记录。
+    mutual_index: dict[tuple[str, str], list[Record]] = {}
+    for r in records:
+        mutual_index.setdefault((r.station, r.counterpart), []).append(r)
+
+    items: list[GapDiagnosis] = []
+    for no in sorted(unpaired):
+        target = record_map[no]
+        mutuals = mutual_index.get(
+            (target.counterpart, target.station), []
+        )
+        same_band_mode = [
+            r
+            for r in mutuals
+            if r.band == target.band and r.mode == target.mode
+        ]
+        eligible = [
+            r
+            for r in same_band_mode
+            if abs(r.ts_micros - target.ts_micros) <= allowed_micros
+        ]
+
+        if eligible:
+            other, diff_micros = _closest(target, eligible)
+            reason = REASON_CANDIDATE_OCCUPIED
+        elif same_band_mode:
+            other, diff_micros = _closest(target, same_band_mode)
+            reason = REASON_TIME_DIFF_EXCEEDED
+        elif mutuals:
+            other, diff_micros = _closest(target, mutuals)
+            reason = REASON_BAND_OR_MODE_MISMATCH
+        else:
+            items.append(
+                GapDiagnosis(
+                    record_no=no,
+                    reason=REASON_COUNTERPART_LOG_MISSING,
+                    counterpart_record_no=None,
+                    time_diff_seconds=None,
+                )
+            )
+            continue
+        items.append(
+            GapDiagnosis(
+                record_no=no,
+                reason=reason,
+                counterpart_record_no=other.record_no,
+                time_diff_seconds=diff_micros / MICROS_PER_SECOND,
+            )
+        )
+    return tuple(items)
+
+
 def _pair_key(r1: Record, r2: Record) -> tuple[str, str]:
     a, b = r1.record_no, r2.record_no
     return (a, b) if a <= b else (b, a)

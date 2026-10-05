@@ -244,6 +244,32 @@ class LockListResponse(StrictModel):
 
 
 # --------------------------------------------------------------------------
+# 未互证日志缺口诊断（复核员按演练查看未配对记录的缺口归因，只读）
+# --------------------------------------------------------------------------
+class GapDiagnosisItem(StrictModel):
+    """一条未配对记录的缺口归因。
+
+    reason 为机器可读归因码，reason_label 为中文归因名；
+    仅 ``counterpart_log_missing`` 时对方记录号与实际时差为 null。
+    """
+
+    record_no: str
+    reason: str
+    reason_label: str
+    counterpart_record_no: str | None = None
+    time_diff_seconds: float | None = None
+
+
+class GapDiagnosisResponse(StrictModel):
+    """当前版本下全部未配对记录的缺口诊断（按记录号升序，只读）。"""
+
+    drill_id: str
+    version: int
+    sealed: bool
+    items: list[GapDiagnosisItem]
+
+
+# --------------------------------------------------------------------------
 # 版本快照（复核员按版本回看 / 比较）
 # --------------------------------------------------------------------------
 class SnapshotResponse(StrictModel):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""一键演示脚本：创建演练 -> 写入日志 -> 查询互证 -> 更正 -> 封存。
+"""一键演示脚本：创建演练 -> 写入日志 -> 查询互证 -> 更正 -> 缺口诊断 -> 封存。
 
 用法：
     python scripts/demo.py [BASE_URL]
@@ -166,6 +166,50 @@ def main(base_url: str) -> None:
     ))
 
     show("查询最终互证结果", *call("GET", f"{base_url}/drills/{drill}/result"))
+
+    # --- 未互证日志缺口诊断（复核员按演练查看，只读） ---
+    # 单条单边记录：无人互指 -> 缺少对方日志；诊断不改变版本。
+    show("缺口诊断（R3 单边，应为缺少对方日志）", *call(
+        "GET", f"{base_url}/drills/{drill}/unpaired-diagnosis"
+    ))
+
+    # 单独构造一个覆盖四类归因的小演练：
+    gap_drill = drill + "-GAP"
+    call("POST", f"{base_url}/drills",
+         {"drill_id": gap_drill, "allowed_time_diff_seconds": 10})
+    call("POST", f"{base_url}/drills/{gap_drill}/logs", {"logs": [
+        # X、D 同为 BH9AAA->BH9BBB，C1 互指；(C1,D) 时差 0 入选，
+        # X 有完全合格候选 C1 却落选 -> 候选已占用（时差 2）
+        {"record_no": "X", "station": "BH9AAA", "counterpart": "BH9BBB",
+         "time": "2026-10-04T00:00:00+00:00", "band": "40m", "mode": "SSB"},
+        {"record_no": "D", "station": "BH9AAA", "counterpart": "BH9BBB",
+         "time": "2026-10-04T00:00:02+00:00", "band": "40m", "mode": "SSB"},
+        {"record_no": "C1", "station": "BH9BBB", "counterpart": "BH9AAA",
+         "time": "2026-10-04T00:00:02+00:00", "band": "40m", "mode": "SSB"},
+        # TE/TF 互指、同波段同模式但时差 60 秒超限 -> 时差超限
+        {"record_no": "TE", "station": "BH7CCC", "counterpart": "BH8DDD",
+         "time": "2026-10-04T00:00:00+00:00", "band": "40m", "mode": "SSB"},
+        {"record_no": "TF", "station": "BH8DDD", "counterpart": "BH7CCC",
+         "time": "2026-10-04T00:01:00+00:00", "band": "40m", "mode": "SSB"},
+        # MG/MH 互指但模式不同 -> 波段或模式不符
+        {"record_no": "MG", "station": "BH5EEE", "counterpart": "BH6FFF",
+         "time": "2026-10-04T00:00:00+00:00", "band": "40m", "mode": "SSB"},
+        {"record_no": "MH", "station": "BH6FFF", "counterpart": "BH5EEE",
+         "time": "2026-10-04T00:00:00+00:00", "band": "40m", "mode": "CW"},
+        # MS 无人互指 -> 缺少对方日志
+        {"record_no": "MS", "station": "BH3GGG", "counterpart": "BH4HHH",
+         "time": "2026-10-04T00:00:00+00:00", "band": "40m", "mode": "SSB"},
+    ]})
+    show("四类缺口归因（按记录号升序，带当前版本）", *call(
+        "GET", f"{base_url}/drills/{gap_drill}/unpaired-diagnosis"
+    ))
+    call("POST", f"{base_url}/drills/{gap_drill}/seal")
+    show("封存后仍可查询缺口诊断（sealed=true，版本不变）", *call(
+        "GET", f"{base_url}/drills/{gap_drill}/unpaired-diagnosis"
+    ))
+    show("未知演练缺口诊断（应 404 drill_not_found）", *call(
+        "GET", f"{base_url}/drills/NO-SUCH-DRILL/unpaired-diagnosis"
+    ))
 
     # --- 版本快照：复核员按版本回看、比较两版差异（只读） ---
     # 列出已留存版本号（创建即有 0；每次真正推进版本同事务留存一版）

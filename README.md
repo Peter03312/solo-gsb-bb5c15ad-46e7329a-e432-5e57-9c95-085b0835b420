@@ -69,6 +69,16 @@
   报错）；升级后的版本推进照常逐版留存；
 - 取回快照与比较版本都是**只读**操作，不改变当前状态、版本与锁定。
 
+### 未互证日志缺口诊断（复核员按演练查看）
+
+复核员可对演练**当前结果中的每条未配对记录**按当前日志依次归因：
+有完全合格（互指、波段、模式、时差均满足）候选却未入选为
+**“候选已占用”**；否则有互指且波段模式相同为**“时差超限”**；否则有
+互指为**“波段或模式不符”**；其余为**“缺少对方日志”**。每类返回时差
+最小（再按记录号最小）的对方记录与实际时差，最后一类对方为空；
+结果按记录号升序并带当前版本。诊断为**只读**，写入/更正/锁定后反映
+现态，封存后仍可查，未知演练明确报错（详见 5.7 节）。
+
 ### 版本语义
 
 - 每条日志以 `(演练号, 记录号)` 唯一标识；
@@ -274,6 +284,10 @@ curl -X POST http://127.0.0.1:8080/drills/DRILL-2026/logs \
 - `pairs`：每对记录号已内部升序，列表整体升序；
 - `unpaired`：未参与任何配对的记录号（按写入顺序）；
 - `version`：当前全场版本，同内容重传不变，异内容更正 +1。
+
+未配对记录“为什么没配上”的逐条缺口归因见
+[5.7 节](#57-未互证日志缺口诊断复核员按演练查看只读)（
+`GET /drills/{drill_id}/unpaired-diagnosis`，只读）。
 
 ### 5.4 人工锁定（复核员互证）
 
@@ -541,6 +555,58 @@ curl -X POST http://127.0.0.1:8080/drills/DRILL-2026/logs/confirm \
   （`ResultResponse`），因此正式确认的结果必然等于预演的
   `proposed_result`（`recomputed_at` 除外）。
 
+### 5.7 未互证日志缺口诊断（复核员按演练查看，只读）
+
+复核员按演练查看**当前互证结果中每条未配对记录**的缺口原因。服务对每条
+未配对记录，依据**当前日志**依次归因（前一类命中即归该类）：
+
+1. 存在完全符合**互指、波段、模式和时差条件**的候选却未入选（该候选必然
+   已被其他配对/锁定占用）→ `candidate_occupied`（候选已占用）；
+2. 否则存在**互指且波段、模式相同**的记录（其时差必超演练允许值）
+   → `time_diff_exceeded`（时差超限）；
+3. 否则存在**互指**记录（波段或模式不一致）
+   → `band_or_mode_mismatch`（波段或模式不符）；
+4. 其余 → `counterpart_log_missing`（缺少对方日志）。
+
+每类返回该类候选中**实际时差最小、再按对方记录号最小**的对方记录及
+实际时差；最后一类没有对方，`counterpart_record_no` 与
+`time_diff_seconds` 均为 `null`。诊断条目按**记录号升序**排列，并带
+演练**当前版本**与封存状态。
+
+#### `GET /drills/{drill_id}/unpaired-diagnosis` —— 缺口诊断（只读）
+
+```bash
+curl http://127.0.0.1:8080/drills/DRILL-2026/unpaired-diagnosis
+```
+
+```json
+{
+  "drill_id": "DRILL-2026",
+  "version": 3,
+  "sealed": false,
+  "items": [
+    {"record_no": "BM", "reason": "band_or_mode_mismatch",
+     "reason_label": "波段或模式不符",
+     "counterpart_record_no": "BM1", "time_diff_seconds": 0.0},
+    {"record_no": "M", "reason": "counterpart_log_missing",
+     "reason_label": "缺少对方日志",
+     "counterpart_record_no": null, "time_diff_seconds": null},
+    {"record_no": "T", "reason": "time_diff_exceeded",
+     "reason_label": "时差超限",
+     "counterpart_record_no": "T1", "time_diff_seconds": 60.0},
+    {"record_no": "X", "reason": "candidate_occupied",
+     "reason_label": "候选已占用",
+     "counterpart_record_no": "C1", "time_diff_seconds": 2.0}
+  ]
+}
+```
+
+- `reason` 为机器可读归因码，`reason_label` 为其中文归因名；
+- 诊断为**只读**：不改变日志、互证结果、版本、锁定与快照；写入、更正、
+  锁定/解除后的下一次查询即反映**现态**（版本同步取自当前）；
+- **封存后仍可查询**（返回封存后的最终态，`sealed` 为 `true`）；
+- **未知演练明确报错**：`404 drill_not_found`。
+
 ---
 
 ## 6. 错误响应与状态码
@@ -554,7 +620,7 @@ curl -X POST http://127.0.0.1:8080/drills/DRILL-2026/logs/confirm \
 | 时间缺时区信息 | `422` | `时间必须携带时区信息，例如 2026-10-04T08:00:00+08:00` |
 | 本台呼号与对方呼号相同 | `422` | `本台呼号与对方呼号不能相同` |
 | 记录号/呼号/波段/模式为空 | `422` | 对应字段不能为空 |
-| 未知演练（查询/写入/封存/锁定） | `404` | `drill_not_found` |
+| 未知演练（查询/写入/封存/锁定/缺口诊断） | `404` | `drill_not_found` |
 | 演练号已存在 | `409` | `drill_exists` |
 | 写入/封存/锁定已封存演练 | `409` | `drill_sealed`（封存后查询仍 `200`） |
 | 批次内记录号重复 | `409` | `duplicate_record_in_batch` |
@@ -577,8 +643,8 @@ curl -X POST http://127.0.0.1:8080/drills/DRILL-2026/logs/confirm \
 ├── app/
 │   ├── main.py          # FastAPI 路由、异常处理、lifespan 初始化
 │   ├── schemas.py       # 请求/响应模型与输入校验（时区/负值/同呼号）
-│   ├── database.py      # SQLite 持久化、事务、版本/封存/锁定/快照/批量预演
-│   ├── matching.py      # 配对核心算法（二分图最小费用最大流，支持强制锁定）
+│   ├── database.py      # SQLite 持久化、事务、版本/封存/锁定/快照/批量预演/缺口诊断
+│   ├── matching.py      # 配对核心算法（二分图最小费用最大流，支持强制锁定）与未配对缺口归因
 │   └── config.py        # 环境变量配置
 ├── scripts/
 │   ├── init_db.py       # 数据初始化（建库/建表/WAL/旧库快照回填，幂等）

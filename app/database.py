@@ -23,10 +23,12 @@ from typing import Iterable
 
 from . import config
 from .matching import (
+    GAP_REASON_LABELS,
     InvalidLockError,
     MatchResult,
     Pair,
     Record,
+    diagnose_unpaired_gaps,
     match_records,
     pair_eligibility,
 )
@@ -1201,6 +1203,50 @@ def get_result(drill_id: str) -> dict:
             "total_time_diff_seconds": row["total_time_diff_seconds"],
             "recomputed_at": row["recomputed_at"],
         }
+    finally:
+        conn.close()
+
+
+# --------------------------------------------------------------------------
+# 未互证日志缺口诊断（复核员按演练查看未配对记录的缺口归因）：只读，
+# 在一致性读快照上按当前日志归因，不改变日志、结果、版本与快照。
+# --------------------------------------------------------------------------
+def diagnose_unpaired(drill_id: str) -> dict:
+    """按当前日志为每条未配对记录归因，结果按记录号升序、带当前版本。
+
+    未知演练抛 ``drill_not_found``；封存后仍可查询（封存不改结果/版本）。
+    """
+    conn = connect()
+    try:
+        with _read_tx(conn):
+            drill = _get_drill_row(conn, drill_id)
+            result_row = conn.execute(
+                "SELECT * FROM results WHERE drill_id = ?", (drill_id,)
+            ).fetchone()
+            unpaired = (
+                json.loads(result_row["unpaired_json"])
+                if result_row is not None
+                else []
+            )
+            records = _load_records(conn, drill_id)
+            diagnoses = diagnose_unpaired_gaps(
+                records, drill["allowed_diff_secs"], unpaired
+            )
+            return {
+                "drill_id": drill_id,
+                "version": drill["version"],
+                "sealed": bool(drill["sealed"]),
+                "items": [
+                    {
+                        "record_no": item.record_no,
+                        "reason": item.reason,
+                        "reason_label": GAP_REASON_LABELS[item.reason],
+                        "counterpart_record_no": item.counterpart_record_no,
+                        "time_diff_seconds": item.time_diff_seconds,
+                    }
+                    for item in diagnoses
+                ],
+            }
     finally:
         conn.close()
 

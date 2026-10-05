@@ -15,6 +15,7 @@ from .schemas import (
     ConfirmBatchRequest,
     CreateDrillRequest,
     DrillResponse,
+    GapDiagnosisResponse,
     LockActionResponse,
     LockListResponse,
     LockRequest,
@@ -35,7 +36,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="应急无线电演练通联日志互证服务",
-    version="1.3.0",
+    version="1.4.0",
     description=(
         "记录各台站通联日志，按相互指认、波段/模式一致、时差不超限的"
         "规则完成全场最优配对（最大配对数 → 最小总时差 → 字典序最小），"
@@ -181,6 +182,19 @@ def list_logs(drill_id: str) -> list[dict]:
 )
 def get_result(drill_id: str) -> dict:
     return database.get_result(drill_id)
+
+
+# --------------------------------------------------------------------------
+# 未互证日志缺口诊断（复核员按演练查看）：只读，不改变日志/结果/版本/快照
+# --------------------------------------------------------------------------
+@app.get(
+    "/drills/{drill_id}/unpaired-diagnosis",
+    response_model=GapDiagnosisResponse,
+    tags=["diagnosis"],
+    summary="按当前日志诊断未配对记录缺口（候选占用/时差超限/波段模式/缺对方）",
+)
+def diagnose_unpaired(drill_id: str) -> dict:
+    return database.diagnose_unpaired(drill_id)
 
 
 # --------------------------------------------------------------------------

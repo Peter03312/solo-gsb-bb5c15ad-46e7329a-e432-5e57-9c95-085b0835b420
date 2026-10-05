@@ -134,6 +134,16 @@ GET {{host}}/drills/{{drill}}/logs
 ### 查询互证结果（配对 + 未配对 + 版本 + 总时差）
 GET {{host}}/drills/{{drill}}/result
 
+### 未配对日志缺口诊断（只读；按当前日志依次归因，带当前版本）
+### reason: candidate_occupied 候选已占用（有完全符合互指/波段/模式/时差
+###         的候选却未入选，该候选必已被别的配对/锁定占用）
+###         time_diff_exceeded 时差超限（互指且波段/模式相同，时差超允许值）
+###         band_or_mode_mismatch 波段或模式不符（仅互指）
+###         missing_counterpart_log 缺少对方日志（无任何互指记录）
+### 前三类返回该类中时差最小（再按记录号最小）的对方记录与实际时差；
+### 末类 counterpart_record_no / time_diff_seconds 均为 null。
+GET {{host}}/drills/{{drill}}/gap-diagnostics
+
 ### 锁定一对互证候选（记录号顺序任意，服务端内部升序）
 ### 仅接受：现存、相互指认、波段/模式相同、时差不超允许值，
 ### 且两条记录均未被其他锁定占用。锁定强制入选结果（即使拉低全场配对数）。

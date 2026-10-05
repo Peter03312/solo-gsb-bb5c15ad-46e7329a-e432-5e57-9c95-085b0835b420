@@ -167,6 +167,11 @@ def main(base_url: str) -> None:
 
     show("查询最终互证结果", *call("GET", f"{base_url}/drills/{drill}/result"))
 
+    # --- 复核员缺口诊断：为每条未配对记录按当前日志归因（只读） ---
+    show("未配对日志缺口诊断（只读，带当前版本）", *call(
+        "GET", f"{base_url}/drills/{drill}/gap-diagnostics"
+    ))
+
     # --- 版本快照：复核员按版本回看、比较两版差异（只读） ---
     # 列出已留存版本号（创建即有 0；每次真正推进版本同事务留存一版）
     show("已留存快照版本号", *call(
@@ -211,6 +216,16 @@ def main(base_url: str) -> None:
     show("封存后写入（应被拒绝 409）", status, body)
 
     show("封存后仍可查询结果", *call("GET", f"{base_url}/drills/{drill}/result"))
+
+    # 封存后仍可进行缺口诊断（只读；版本、sealed 与最终现态一致）
+    show("封存后仍可查询缺口诊断", *call(
+        "GET", f"{base_url}/drills/{drill}/gap-diagnostics"
+    ))
+
+    # 未知演练明确报错：404 drill_not_found
+    show("未知演练的缺口诊断（应 404 drill_not_found）", *call(
+        "GET", f"{base_url}/drills/NOPE/gap-diagnostics"
+    ))
 
 
 if __name__ == "__main__":

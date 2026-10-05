@@ -205,6 +205,41 @@ class ResultResponse(StrictModel):
     recomputed_at: str | None = None
 
 
+# --------------------------------------------------------------------------
+# 未互证日志缺口诊断（复核员按演练查看未配对缺口；只读）
+# --------------------------------------------------------------------------
+class GapItemOut(StrictModel):
+    """单条未配对记录的缺口诊断：归因 + 该类中时差最小的对方记录。"""
+
+    record_no: str
+    reason: str = Field(
+        ...,
+        description=(
+            "缺口原因：candidate_occupied（候选已占用）/ "
+            "time_diff_exceeded（时差超限）/ "
+            "band_or_mode_mismatch（波段或模式不符）/ "
+            "missing_counterpart_log（缺少对方日志）"
+        ),
+    )
+    reason_label: str = Field(..., description="原因中文说明")
+    counterpart_record_no: str | None = Field(
+        None, description="该类中时差最小（再按记录号最小）的对方记录；末类为 null"
+    )
+    time_diff_seconds: float | None = Field(
+        None, description="与该对方记录的实际时差（秒）；末类为 null"
+    )
+
+
+class GapDiagnosticsResponse(StrictModel):
+    """按演练查看的未配对日志缺口诊断（当前版本；只读）。"""
+
+    drill_id: str
+    version: int
+    sealed: bool
+    allowed_time_diff_seconds: float
+    gaps: list[GapItemOut]
+
+
 class LockRequest(StrictModel):
     """锁定/解除锁定请求体：一对记录号（顺序任意，服务端内部升序）。"""
 

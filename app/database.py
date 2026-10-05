@@ -23,10 +23,12 @@ from typing import Iterable
 
 from . import config
 from .matching import (
+    GAP_REASON_LABELS,
     InvalidLockError,
     MatchResult,
     Pair,
     Record,
+    diagnose_gaps,
     match_records,
     pair_eligibility,
 )
@@ -1200,6 +1202,49 @@ def get_result(drill_id: str) -> dict:
             "unpaired": json.loads(row["unpaired_json"]),
             "total_time_diff_seconds": row["total_time_diff_seconds"],
             "recomputed_at": row["recomputed_at"],
+        }
+    finally:
+        conn.close()
+
+
+# --------------------------------------------------------------------------
+# 未互证日志缺口诊断（复核员按演练查看未配对缺口）：只读，不改任何状态
+# --------------------------------------------------------------------------
+def get_gap_diagnostics(drill_id: str) -> dict:
+    """按当前日志为每条未配对记录归因缺口原因（只读）。
+
+    归因与当前版本、当前日志/配对结果严格一致；不改变日志、结果、版本
+    与快照。封存后仍可查询；未知演练抛 ``drill_not_found``。
+    """
+    conn = connect()
+    try:
+        with _read_tx(conn):
+            drill = _get_drill_row(conn, drill_id)
+            row = conn.execute(
+                "SELECT * FROM results WHERE drill_id = ?", (drill_id,)
+            ).fetchone()
+            unpaired = (
+                json.loads(row["unpaired_json"]) if row is not None else []
+            )
+            records = _load_records(conn, drill_id)
+            gaps = diagnose_gaps(
+                records, drill["allowed_diff_secs"], unpaired
+            )
+        return {
+            "drill_id": drill_id,
+            "version": drill["version"],
+            "sealed": bool(drill["sealed"]),
+            "allowed_time_diff_seconds": drill["allowed_diff_secs"],
+            "gaps": [
+                {
+                    "record_no": g.record_no,
+                    "reason": g.reason,
+                    "reason_label": GAP_REASON_LABELS[g.reason],
+                    "counterpart_record_no": g.counterpart_record_no,
+                    "time_diff_seconds": g.time_diff_seconds,
+                }
+                for g in gaps
+            ],
         }
     finally:
         conn.close()

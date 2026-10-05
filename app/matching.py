@@ -306,3 +306,100 @@ def match_records(
         unpaired=unpaired,
         total_time_diff_seconds=total_micros / MICROS_PER_SECOND,
     )
+
+
+# --------------------------------------------------------------------------
+# 未互证日志缺口诊断（复核员按演练查看未配对记录的缺口归因）
+#
+# 对每条当前结果中的未配对记录，按当前日志依次归因（前者命中即不再下探）：
+#   1. candidate_occupied（候选已占用）：存在完全满足互指、波段、模式、
+#      时差条件的对方记录。最大基数匹配下该候选必然已被别的配对占用
+#      （否则增广这条边即可多配一对），故未入选的原因是候选被占用；
+#   2. time_diff_exceeded（时差超限）：否则存在互指且波段、模式相同的
+#      对方记录（时差必然都超过允许值，否则会落入上一类）；
+#   3. band_or_mode_mismatch（波段或模式不符）：否则存在互指的对方记录；
+#   4. missing_counterpart_log（缺少对方日志）：没有任何互指记录。
+# 前三类返回该类候选中时差最小、再按记录号最小的对方记录及实际时差。
+# --------------------------------------------------------------------------
+GAP_CANDIDATE_OCCUPIED = "candidate_occupied"
+GAP_TIME_DIFF_EXCEEDED = "time_diff_exceeded"
+GAP_BAND_OR_MODE_MISMATCH = "band_or_mode_mismatch"
+GAP_MISSING_COUNTERPART = "missing_counterpart_log"
+
+GAP_REASON_LABELS: dict[str, str] = {
+    GAP_CANDIDATE_OCCUPIED: "候选已占用",
+    GAP_TIME_DIFF_EXCEEDED: "时差超限",
+    GAP_BAND_OR_MODE_MISMATCH: "波段或模式不符",
+    GAP_MISSING_COUNTERPART: "缺少对方日志",
+}
+
+
+@dataclass(frozen=True)
+class GapItem:
+    """一条未配对记录的缺口诊断结论。
+
+    末类（缺少对方日志）``counterpart_record_no`` 与
+    ``time_diff_seconds`` 均为 ``None``。
+    """
+
+    record_no: str
+    reason: str
+    counterpart_record_no: str | None
+    time_diff_seconds: float | None
+
+
+def _is_mutual(r1: Record, r2: Record) -> bool:
+    """两条日志是否相互指认（本台/对方呼号互换）。"""
+    return r1.station == r2.counterpart and r1.counterpart == r2.station
+
+
+def diagnose_gaps(
+    records: Sequence[Record],
+    allowed_diff_seconds: float,
+    unpaired: Sequence[str],
+) -> list[GapItem]:
+    """按当前日志为每条未配对记录归因缺口原因。
+
+    ``unpaired`` 取当前互证结果的未配对记录（其记录必现存于
+    ``records``）；结果按记录号升序返回。前三类的对方记录在各自候选
+    集合内按“时差最小、再记录号最小”择一返回。
+    """
+    allowed_micros = int(round(allowed_diff_seconds * MICROS_PER_SECOND))
+    record_map = {r.record_no: r for r in records}
+    items: list[GapItem] = []
+    for no in sorted(unpaired):
+        u = record_map[no]
+        # 三个逐层收窄的候选集（均含 (时差微秒, 对方记录号)）：
+        # mutual ⊇ band_mode ⊇ eligible。
+        mutual: list[tuple[int, str]] = []
+        band_mode: list[tuple[int, str]] = []
+        eligible: list[tuple[int, str]] = []
+        for v in records:
+            if v.record_no == no or not _is_mutual(u, v):
+                continue
+            diff_micros = abs(u.ts_micros - v.ts_micros)
+            mutual.append((diff_micros, v.record_no))
+            if v.band == u.band and v.mode == u.mode:
+                band_mode.append((diff_micros, v.record_no))
+                if diff_micros <= allowed_micros:
+                    eligible.append((diff_micros, v.record_no))
+
+        if eligible:
+            reason, pool = GAP_CANDIDATE_OCCUPIED, eligible
+        elif band_mode:
+            reason, pool = GAP_TIME_DIFF_EXCEEDED, band_mode
+        elif mutual:
+            reason, pool = GAP_BAND_OR_MODE_MISMATCH, mutual
+        else:
+            items.append(GapItem(no, GAP_MISSING_COUNTERPART, None, None))
+            continue
+        diff_micros, other_no = min(pool, key=lambda x: (x[0], x[1]))
+        items.append(
+            GapItem(
+                record_no=no,
+                reason=reason,
+                counterpart_record_no=other_no,
+                time_diff_seconds=diff_micros / MICROS_PER_SECOND,
+            )
+        )
+    return items

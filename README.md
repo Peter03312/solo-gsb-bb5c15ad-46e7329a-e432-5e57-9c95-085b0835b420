@@ -92,6 +92,26 @@
   （配对/未配对/总时差/锁定清单）；重传与失败回滚不留存，
   升级既有库仅从升级时当前版本开始留存、旧版本不补造。
 
+### 未互证日志缺口诊断（复核员查看未配对缺口）
+
+复核员可按演练查看当前每条**未配对**记录“为什么没配上”。对每条未配对
+记录，按**当前日志**依次归因（命中前者即不再下探）：
+
+1. **候选已占用**（`candidate_occupied`）：存在完全符合互指、波段、模式、
+   时差条件的对方记录却未入选——最大配对数解中该候选必然已被别的配对
+   （含锁定对）占用，否则增广这条边即可多配一对；
+2. **时差超限**（`time_diff_exceeded`）：否则存在互指且波段、模式相同的
+   对方记录（时差必然均超过演练允许值）；
+3. **波段或模式不符**（`band_or_mode_mismatch`）：否则存在互指记录
+   （但波段或模式不一致）；
+4. **缺少对方日志**（`missing_counterpart_log`）：没有任何互指记录。
+
+前三类返回**该类候选中时差最小、再按对方记录号最小**的那一条对方记录及
+实际时差；末类对方记录为空。结果**按记录号升序**，并带**当前版本**。
+诊断为**只读**：不改变日志、结果、版本与快照；写入、更正、锁定等变化
+后再查即反映现态；**封存后仍可查**；未知演练明确报错
+（`404 drill_not_found`，详见 5.7 节）。
+
 ---
 
 ## 2. 一键启动（Docker Compose，推荐）
@@ -541,6 +561,78 @@ curl -X POST http://127.0.0.1:8080/drills/DRILL-2026/logs/confirm \
   （`ResultResponse`），因此正式确认的结果必然等于预演的
   `proposed_result`（`recomputed_at` 除外）。
 
+### 5.7 未互证日志缺口诊断（复核员查看未配对缺口）
+
+#### `GET /drills/{drill_id}/gap-diagnostics` —— 未配对日志缺口诊断（只读）
+
+按演练当前日志，为当前互证结果中的**每条未配对记录**依次归因缺口原因。
+
+```bash
+curl http://127.0.0.1:8080/drills/DRILL-2026/gap-diagnostics
+```
+
+响应 `200`：
+
+```json
+{
+  "drill_id": "DRILL-2026",
+  "version": 3,
+  "sealed": false,
+  "allowed_time_diff_seconds": 10.0,
+  "gaps": [
+    {
+      "record_no": "M1",
+      "reason": "band_or_mode_mismatch",
+      "reason_label": "波段或模式不符",
+      "counterpart_record_no": "M2",
+      "time_diff_seconds": 0.0
+    },
+    {
+      "record_no": "T1",
+      "reason": "time_diff_exceeded",
+      "reason_label": "时差超限",
+      "counterpart_record_no": "T2",
+      "time_diff_seconds": 15.0
+    },
+    {
+      "record_no": "X2",
+      "reason": "candidate_occupied",
+      "reason_label": "候选已占用",
+      "counterpart_record_no": "Y1",
+      "time_diff_seconds": 1.0
+    },
+    {
+      "record_no": "Z1",
+      "reason": "missing_counterpart_log",
+      "reason_label": "缺少对方日志",
+      "counterpart_record_no": null,
+      "time_diff_seconds": null
+    }
+  ]
+}
+```
+
+字段与归因规则：
+
+- `gaps` 只含当前结果中的未配对记录，**按记录号升序**；
+- 每条按下列顺序对**当前日志**判定，命中前者即归为该类：
+
+  | `reason` | 中文（`reason_label`） | 判定条件 |
+  | --- | --- | --- |
+  | `candidate_occupied` | 候选已占用 | 有完全符合互指、波段、模式、时差条件的对方候选却未入选（该候选必已被别的配对/锁定占用） |
+  | `time_diff_exceeded` | 时差超限 | 否则有互指且波段、模式相同的记录（时差均超允许值） |
+  | `band_or_mode_mismatch` | 波段或模式不符 | 否则有互指记录（波段或模式不一致） |
+  | `missing_counterpart_log` | 缺少对方日志 | 没有任何互指记录 |
+
+- 前三类的 `counterpart_record_no` / `time_diff_seconds` 取**该类候选中
+  时差最小、再按对方记录号最小**的一条及其与该未配对记录的实际时差；
+  `missing_counterpart_log` 两者均为 `null`；
+- `version` / `sealed` 为诊断时的**当前现态**：查询本身不推进版本，
+  写入、更正、锁定/解除后再查即反映新结果与新版本；
+- 诊断为**只读操作**，不改变日志、结果、版本与快照；**封存后仍返回
+  `200`**（`sealed` 为 `true`）；未知演练返回 `404 drill_not_found`；
+- 演练尚无任何日志（空场）时 `gaps` 为空列表。
+
 ---
 
 ## 6. 错误响应与状态码
@@ -554,7 +646,7 @@ curl -X POST http://127.0.0.1:8080/drills/DRILL-2026/logs/confirm \
 | 时间缺时区信息 | `422` | `时间必须携带时区信息，例如 2026-10-04T08:00:00+08:00` |
 | 本台呼号与对方呼号相同 | `422` | `本台呼号与对方呼号不能相同` |
 | 记录号/呼号/波段/模式为空 | `422` | 对应字段不能为空 |
-| 未知演练（查询/写入/封存/锁定） | `404` | `drill_not_found` |
+| 未知演练（查询/写入/封存/锁定/缺口诊断） | `404` | `drill_not_found` |
 | 演练号已存在 | `409` | `drill_exists` |
 | 写入/封存/锁定已封存演练 | `409` | `drill_sealed`（封存后查询仍 `200`） |
 | 批次内记录号重复 | `409` | `duplicate_record_in_batch` |
@@ -579,10 +671,11 @@ curl -X POST http://127.0.0.1:8080/drills/DRILL-2026/logs/confirm \
 │   ├── schemas.py       # 请求/响应模型与输入校验（时区/负值/同呼号）
 │   ├── database.py      # SQLite 持久化、事务、版本/封存/锁定/快照/批量预演
 │   ├── matching.py      # 配对核心算法（二分图最小费用最大流，支持强制锁定）
+│   │                    #   与未配对缺口诊断（diagnose_gaps）
 │   └── config.py        # 环境变量配置
 ├── scripts/
 │   ├── init_db.py       # 数据初始化（建库/建表/WAL/旧库快照回填，幂等）
-│   └── demo.py          # 端到端调用演示（含版本回看/比较，纯标准库）
+│   └── demo.py          # 端到端调用演示（含版本回看/比较、缺口诊断，纯标准库）
 ├── tests/               # 算法单测（含穷举对照）+ HTTP 集成测试（含快照）
 ├── examples/requests.http
 ├── Dockerfile
